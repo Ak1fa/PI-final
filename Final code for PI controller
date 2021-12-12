@@ -1,0 +1,172 @@
+#include "mbed.h"																	                          // Library included to initialize functionality of the microcontroller		 
+#include "PID.h"																		                        // Library that contains necessary functinality for the creation and operation of a PI(D) controller 
+
+PwmOut fanpwm(p26);																		                      // Lines 4&5: Setting the output and input ports respectivley on the microcontroller, port p26 for PWM output and p15 for reading analog inputs
+AnalogIn input(p15);
+Serial pc(USBTX, USBRX);																                    // Initializing serial USB connectivity with pcs
+double Input = 0, Output = 0, setPoint = 30,totErr, kp=3, ki=1;							// Lines 7 - 11: Initialzing and setting values for needed variables in the code
+unsigned long prevTime, timerTime = 0;
+float movingAvarage = 0;
+int timeNow = 0;
+Ticker t;
+
+LocalFileSystem local("local");															                // Enables accsess to a sandboxed file system, named "local" in this case
+
+
+
+void timer ()																			                          // Constructor for the object "timer"
+
+{
+    timerTime++;																		                        // Lines 20&21: Behavior of object "timer", itterating variables "timerTime" and "timeNow" with +1 once called
+    timeNow++;
+
+}
+
+void Compute()																			                        // Constructor for the object "Compute", this is where the actual calculation inside the code for the PI controller happens
+
+{
+    unsigned long now = timerTime;														              // Equates the variable "now" with the previously used variable "timerTime"
+    int timeChange = (now - prevTime);													            // Sets the variable "timeChange" as a function of the previosly intialized value "now", 
+																						                                // "prevTime" is used to update the value of now enableing a running change for the timeChange which is used for calculating the value of the total error "totErr", which is the difference from the desired value, in this case our "setpoint",
+																						                                // in other words "totErr" is the difference in temperature between the desired one and calculated one, "totErr" is updated on line 38 for a new value when the function is called
+    double error = -(setPoint - movingAvarage);
+    totErr += (error*timeChange*0.01);
+
+    Output = kp*error+ki*totErr;														                // Calculated the output as a function of the "old" error value and the updated "totErr" value and the set and adjustable kp and ki values, kp represents the proportional part of the PI controller while ki is the integral part
+
+    prevTime = now;
+    totErr = error;
+
+
+
+    if(Output <= 0) {																	                      // Makes it so that the variable "Output" never can be negative
+        Output = 0;
+    }
+
+    Output = Output/10;																	
+
+
+}
+
+void SetTunings(double Kp, double Ki)													              // Calculates PID constants, and allows to update them on the go without ruining calculations
+
+{
+
+
+    kp = Kp;																			                          // Lines 56&57 sets intialized kp and ki values as the actual variables used for proportional "Kp" and integral "Ki" control
+    ki = Ki;
+
+}
+
+int main()																				                          // Start of the main program
+
+{
+        FILE *temperature = fopen("/local/t_file.txt", "a");							  // Lines 64&65 used to write temperature and pwm into text files so data can be extracted
+        FILE *pwm = fopen("/local/pwm_file.txt", "a");
+
+    float newInput = 0;																	                    // Variable "newInput" is initlized, this is used as the updated input value read from the temperature sensor
+    float avArray[10];																	                    // Intialization of an array in which the "newInput" values are updated to
+
+    int avIndex = 0;
+
+    for(int i=0; i<10; i++)																                  // Lines 72-75: Populates the previously initialized array with with values form the variable "newInput", creates a new variable "movingAverage" with the value of "newInput" used later in the code to roll over the indexed array for constant updates of the input values read by the microchip 
+
+    	avArray[i]=newInput;
+   		movingAvarage = newInput;
+
+    t.attach(timer, 0.001);																                  // Attaches the object "timer", and starts its iteration
+
+    while (true)
+
+    {
+        if(timeNow>=100) {																                  // Lines 82-89: Reads the actual input values fromt the temperature sensor, multiplying the value with 3.3 (being the reference voltage in use for the microchip and) and 100 to get an output directly as celsius degrees
+            newInput = input.read()*3.30f*100.0f;
+        }
+
+        	movingAvarage -= avArray[avIndex]/10;
+
+        	avArray[avIndex] = newInput;
+        	movingAvarage += avArray[avIndex]/10;
+
+        if (avIndex < 9) {																                  // Lines 91-96: Rolls over the index ("avIndex") once 10 values have been input, . 
+            avIndex++;
+        }
+
+        else {
+            avIndex = 0;
+        }
+
+        Compute();																		                     // Calls on the main PI control part, described above
+
+		pc.printf("Temperature %f Avarage %f PWM %f P-value %f I-value %f Setpoint %f Current Error %f\n",newInput, movingAvarage, fanpwm.read(), kp, ki, setPoint, totErr); 
+        pc.printf("\n\r");																
+
+        fprintf(temperature, "%f\n\r ",newInput);
+        fprintf(pwm, "%f\n\r ",fanpwm.read());											      // Lines 101-105: Prints values of: "newInput", "movingAvearage", "fanpwm" , "kp", "ki", "setPoint", "totErr" and the temperature "newInput" on screen, Putty was used to view these values on a pc
+
+        wait_ms(500);																	                    // Waits 500ms after each print, making the dataflow on screen more readable
+
+        if (pc.readable())
+
+        {
+            char c = pc.getc();															              // Lines 109-164: The program checks for specfied user input, allowing for tuning the PI controller as needed, as well as setting a new setpoint temperature
+
+            switch (c) {
+                case 'l' :
+                    fclose(temperature);
+                    fclose(pwm);
+                    break;
+
+                case 'z' :
+
+                    if (kp <= 100)
+                        kp++;
+
+                    break;
+
+                case 'x':
+
+                    if (kp > 0)
+                        kp--;
+
+                    break;
+
+                case 'c':
+
+                    if (ki <= 100)
+                        ki++;
+
+                    break;
+
+                case 'v':
+
+                    if (ki > 0)
+                        ki--;
+
+                    break;
+
+                case 'b':
+
+                    if (setPoint <= 75)
+                        setPoint+=0.5;
+
+                    break;
+
+                case 'n':
+
+                    if (setPoint > 0)
+                        setPoint-=0.5;
+
+                    break;
+
+            }
+
+        }
+
+
+        SetTunings(kp,ki);
+        fanpwm.write(Output);														              // Gives the calculated "Output" value to the fan, establishing a functioning PI controller for keeping the load at a certain temperature!
+
+    }
+
+}
